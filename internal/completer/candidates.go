@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/sqls-server/sqls/dialect"
 	"github.com/sqls-server/sqls/internal/database"
 	"github.com/sqls-server/sqls/internal/lsp"
 	"github.com/sqls-server/sqls/parser/parseutil"
@@ -16,20 +17,50 @@ type StatementClauseContext struct {
 	HasFromAfter      bool
 }
 
-func getContextualKeywords(syntaxPos parseutil.SyntaxPosition, clauseCtx StatementClauseContext) []string {
+func isMySQLDriver(driver dialect.DatabaseDriver) bool {
+	switch driver {
+	case dialect.DatabaseDriverMySQL, dialect.DatabaseDriverMySQL8, dialect.DatabaseDriverMySQL57, dialect.DatabaseDriverMySQL56:
+		return true
+	}
+	return false
+}
+
+func getStatementStarters(driver dialect.DatabaseDriver) []string {
+	kws := []string{
+		"SELECT", "INSERT INTO", "UPDATE", "DELETE FROM", "WITH",
+		"CREATE TABLE", "CREATE VIEW", "CREATE INDEX", "CREATE DATABASE",
+		"ALTER TABLE", "DROP TABLE", "DROP VIEW", "DROP INDEX",
+		"TRUNCATE", "USE", "SHOW", "DESCRIBE", "EXPLAIN", "CALL",
+	}
+	switch {
+	case driver == dialect.DatabaseDriverSQLite3:
+		kws = append(kws, "PRAGMA", "ATTACH DATABASE")
+	case isMySQLDriver(driver):
+		kws = append(kws, "REPLACE INTO", "START TRANSACTION")
+	case driver == dialect.DatabaseDriverClickhouse:
+		kws = append(kws, "OPTIMIZE TABLE", "ATTACH")
+	}
+	return kws
+}
+
+func getContextualKeywords(syntaxPos parseutil.SyntaxPosition, clauseCtx StatementClauseContext, driver dialect.DatabaseDriver) []string {
 	if clauseCtx.LastKeyword == "FROM" && clauseCtx.HasTableAfterFrom {
 		kws := []string{
 			"WHERE", "JOIN", "LEFT JOIN", "RIGHT JOIN", "INNER JOIN", "FULL JOIN", "CROSS JOIN",
 			"GROUP BY", "ORDER BY", "HAVING", "LIMIT", "OFFSET",
 			"UNION", "UNION ALL", "INTERSECT", "EXCEPT",
-			"FINAL", "PREWHERE", "SETTINGS", "FORMAT",
 		}
+		switch {
+		case driver == dialect.DatabaseDriverClickhouse:
+			kws = append(kws, "FINAL", "PREWHERE", "SETTINGS", "FORMAT", "SAMPLE")
+		case isMySQLDriver(driver):
+			kws = append(kws, "FORCE INDEX", "USE INDEX", "IGNORE INDEX", "STRAIGHT_JOIN", "FOR UPDATE", "LOCK IN SHARE MODE")
+		case driver == dialect.DatabaseDriverPostgreSQL:
+			kws = append(kws, "TABLESAMPLE", "FOR UPDATE", "FOR SHARE", "NOWAIT", "SKIP LOCKED")
+		}
+
 		if clauseCtx.HasNewlineBefore {
-			kws = append(kws,
-				"SELECT", "INSERT INTO", "UPDATE", "DELETE FROM", "WITH",
-				"CREATE TABLE", "CREATE VIEW", "CREATE INDEX",
-				"ALTER TABLE", "DROP TABLE", "DROP VIEW",
-			)
+			kws = append(kws, getStatementStarters(driver)...)
 		}
 		return kws
 	}
@@ -45,25 +76,53 @@ func getContextualKeywords(syntaxPos parseutil.SyntaxPosition, clauseCtx Stateme
 		} else {
 			kws = append([]string{"AS"}, kws...)
 		}
+		if driver == dialect.DatabaseDriverPostgreSQL {
+			kws = append(kws, "DISTINCT ON")
+		}
 		return kws
-	case "WHERE", "HAVING":
-		return []string{
-			"AND", "OR", "NOT", "IN", "NOT IN", "LIKE", "NOT LIKE", "ILIKE",
+	case "WHERE", "HAVING", "PREWHERE":
+		kws := []string{
+			"AND", "OR", "NOT", "IN", "NOT IN", "LIKE", "NOT LIKE",
 			"BETWEEN", "IS NULL", "IS NOT NULL", "EXISTS",
 			"GROUP BY", "ORDER BY", "HAVING", "LIMIT", "OFFSET",
 			"UNION", "UNION ALL",
-			"SETTINGS", "FORMAT",
 		}
+		switch {
+		case driver == dialect.DatabaseDriverPostgreSQL:
+			kws = append(kws, "ILIKE", "NOT ILIKE", "SIMILAR TO", "IS DISTINCT FROM")
+		case isMySQLDriver(driver):
+			kws = append(kws, "REGEXP", "RLIKE")
+		case driver == dialect.DatabaseDriverSQLite3:
+			kws = append(kws, "GLOB", "REGEXP")
+		case driver == dialect.DatabaseDriverClickhouse:
+			kws = append(kws, "GLOBAL IN", "GLOBAL NOT IN", "SETTINGS", "FORMAT")
+		}
+		if clauseCtx.HasNewlineBefore {
+			kws = append(kws, getStatementStarters(driver)...)
+		}
+		return kws
 	case "ORDER BY":
-		return []string{
+		kws := []string{
 			"ASC", "DESC", "NULLS FIRST", "NULLS LAST", "LIMIT", "OFFSET",
-			"SETTINGS", "FORMAT",
 		}
+		if driver == dialect.DatabaseDriverClickhouse {
+			kws = append(kws, "WITH FILL", "INTERPOLATE", "SETTINGS", "FORMAT")
+		}
+		if clauseCtx.HasNewlineBefore {
+			kws = append(kws, getStatementStarters(driver)...)
+		}
+		return kws
 	case "GROUP BY":
-		return []string{
+		kws := []string{
 			"HAVING", "ORDER BY", "LIMIT", "OFFSET", "WITH ROLLUP",
-			"SETTINGS", "FORMAT",
 		}
+		if driver == dialect.DatabaseDriverClickhouse {
+			kws = append(kws, "SETTINGS", "FORMAT")
+		}
+		if clauseCtx.HasNewlineBefore {
+			kws = append(kws, getStatementStarters(driver)...)
+		}
+		return kws
 	case "JOIN", "INNER JOIN", "LEFT JOIN", "RIGHT JOIN", "FULL JOIN", "CROSS JOIN":
 		return []string{
 			"ON", "USING",
@@ -74,36 +133,57 @@ func getContextualKeywords(syntaxPos parseutil.SyntaxPosition, clauseCtx Stateme
 			"GROUP BY", "ORDER BY", "LIMIT",
 		}
 	case "SET":
-		return []string{
-			"WHERE",
+		kws := []string{"WHERE"}
+		if driver == dialect.DatabaseDriverPostgreSQL || driver == dialect.DatabaseDriverSQLite3 {
+			kws = append(kws, "RETURNING")
 		}
+		if clauseCtx.HasNewlineBefore {
+			kws = append(kws, getStatementStarters(driver)...)
+		}
+		return kws
 	case "UPDATE":
-		return []string{
-			"SET",
+		kws := []string{"SET"}
+		if driver == dialect.DatabaseDriverPostgreSQL || driver == dialect.DatabaseDriverSQLite3 {
+			kws = append(kws, "RETURNING")
 		}
+		return kws
 	case "INSERT", "INSERT INTO":
-		return []string{
-			"VALUES", "SELECT",
+		kws := []string{"VALUES", "SELECT"}
+		switch {
+		case driver == dialect.DatabaseDriverPostgreSQL || driver == dialect.DatabaseDriverSQLite3:
+			kws = append(kws, "ON CONFLICT", "RETURNING")
+		case isMySQLDriver(driver):
+			kws = append(kws, "ON DUPLICATE KEY UPDATE")
 		}
+		return kws
+	case "VALUES":
+		kws := []string{}
+		switch {
+		case driver == dialect.DatabaseDriverPostgreSQL || driver == dialect.DatabaseDriverSQLite3:
+			kws = append(kws, "ON CONFLICT", "RETURNING")
+		case isMySQLDriver(driver):
+			kws = append(kws, "ON DUPLICATE KEY UPDATE")
+		}
+		if clauseCtx.HasNewlineBefore {
+			kws = append(kws, getStatementStarters(driver)...)
+		}
+		return kws
 	case "DELETE", "DELETE FROM":
-		return []string{
-			"WHERE",
+		kws := []string{"WHERE"}
+		if driver == dialect.DatabaseDriverPostgreSQL || driver == dialect.DatabaseDriverSQLite3 {
+			kws = append(kws, "RETURNING")
 		}
+		return kws
 	case "FROM":
 		return []string{}
 	default:
-		return []string{
-			"SELECT", "INSERT INTO", "UPDATE", "DELETE FROM", "WITH",
-			"CREATE TABLE", "CREATE VIEW", "CREATE INDEX", "CREATE DATABASE",
-			"ALTER TABLE", "DROP TABLE", "DROP VIEW", "DROP INDEX",
-			"TRUNCATE", "USE", "SHOW", "DESCRIBE", "EXPLAIN", "CALL",
-		}
+		return getStatementStarters(driver)
 	}
 }
 
 func (c *Completer) keywordCandidates(syntaxPos parseutil.SyntaxPosition, clauseCtx StatementClauseContext, lower bool, allKeywords []string) []lsp.CompletionItem {
 	candidates := []lsp.CompletionItem{}
-	ctxKWs := getContextualKeywords(syntaxPos, clauseCtx)
+	ctxKWs := getContextualKeywords(syntaxPos, clauseCtx, c.Driver)
 	seen := make(map[string]bool)
 
 	for _, k := range ctxKWs {

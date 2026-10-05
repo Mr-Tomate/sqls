@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sqls-server/sqls/dialect"
 	"github.com/sqls-server/sqls/internal/lsp"
 )
 
@@ -230,6 +231,7 @@ func TestComplete_ContextualKeywords(t *testing.T) {
 		cursorLine    int
 		cursorCol     int
 		lowerCase     bool
+		driver        dialect.DatabaseDriver
 		shouldContain []string
 		shouldOmit    []string
 	}{
@@ -463,24 +465,72 @@ func TestComplete_ContextualKeywords(t *testing.T) {
 			text:          "SELECT * FROM users for",
 			cursorLine:    0,
 			cursorCol:     23,
+			driver:        dialect.DatabaseDriverClickhouse,
 			shouldContain: []string{"FORMAT"},
-			shouldOmit:    []string{"SELECT", "INSERT"},
+			shouldOmit:    []string{"SELECT", "INSERT", "RETURNING"},
 		},
 		{
 			name:          "ClickHouse FINAL keyword after table reference",
 			text:          "SELECT * FROM users fi",
 			cursorLine:    0,
 			cursorCol:     22,
+			driver:        dialect.DatabaseDriverClickhouse,
 			shouldContain: []string{"FINAL"},
-			shouldOmit:    []string{"SELECT", "INSERT"},
+			shouldOmit:    []string{"SELECT", "INSERT", "RETURNING"},
 		},
 		{
 			name:          "ClickHouse PREWHERE keyword after table reference",
 			text:          "SELECT * FROM users pre",
 			cursorLine:    0,
 			cursorCol:     23,
+			driver:        dialect.DatabaseDriverClickhouse,
 			shouldContain: []string{"PREWHERE"},
-			shouldOmit:    []string{"SELECT", "INSERT"},
+			shouldOmit:    []string{"SELECT", "INSERT", "RETURNING"},
+		},
+		{
+			name:          "PostgreSQL: INSERT suggests RETURNING and ON CONFLICT",
+			text:          "INSERT INTO users (id) VALUES (1) ret",
+			cursorLine:    0,
+			cursorCol:     37,
+			driver:        dialect.DatabaseDriverPostgreSQL,
+			shouldContain: []string{"RETURNING"},
+			shouldOmit:    []string{"PREWHERE", "FINAL", "FORCE INDEX"},
+		},
+		{
+			name:          "PostgreSQL: WHERE suggests ILIKE",
+			text:          "SELECT * FROM users WHERE name ili",
+			cursorLine:    0,
+			cursorCol:     34,
+			driver:        dialect.DatabaseDriverPostgreSQL,
+			shouldContain: []string{"ILIKE"},
+			shouldOmit:    []string{"REGEXP", "GLOB"},
+		},
+		{
+			name:          "MySQL: INSERT suggests ON DUPLICATE KEY UPDATE but not ON CONFLICT",
+			text:          "INSERT INTO stats (id) VALUES (1) on",
+			cursorLine:    0,
+			cursorCol:     36,
+			driver:        dialect.DatabaseDriverMySQL,
+			shouldContain: []string{"ON DUPLICATE KEY UPDATE"},
+			shouldOmit:    []string{"ON CONFLICT", "RETURNING"},
+		},
+		{
+			name:          "MySQL: after table suggests FORCE INDEX and FOR UPDATE",
+			text:          "SELECT * FROM users for",
+			cursorLine:    0,
+			cursorCol:     23,
+			driver:        dialect.DatabaseDriverMySQL,
+			shouldContain: []string{"FORCE INDEX", "FOR UPDATE"},
+			shouldOmit:    []string{"FINAL", "PREWHERE", "RETURNING"},
+		},
+		{
+			name:          "SQLite: suggests PRAGMA at query start",
+			text:          "pra",
+			cursorLine:    0,
+			cursorCol:     3,
+			driver:        dialect.DatabaseDriverSQLite3,
+			shouldContain: []string{"PRAGMA"},
+			shouldOmit:    []string{"FINAL", "FORCE INDEX"},
 		},
 		{
 			name:          "cursor at col 0 only suggests statement starters, never middle keywords like ABORT/AND/WHERE",
@@ -502,6 +552,7 @@ func TestComplete_ContextualKeywords(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			c.Driver = tt.driver
 			items, err := c.Complete(tt.text, lsp.CompletionParams{
 				TextDocumentPositionParams: lsp.TextDocumentPositionParams{
 					Position: lsp.Position{
