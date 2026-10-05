@@ -482,6 +482,22 @@ func TestComplete_ContextualKeywords(t *testing.T) {
 			shouldContain: []string{"PREWHERE"},
 			shouldOmit:    []string{"SELECT", "INSERT"},
 		},
+		{
+			name:          "cursor at col 0 only suggests statement starters, never middle keywords like ABORT/AND/WHERE",
+			text:          "\n",
+			cursorLine:    1,
+			cursorCol:     0,
+			shouldContain: []string{"SELECT", "INSERT INTO", "UPDATE", "DELETE FROM", "WITH", "CREATE TABLE"},
+			shouldOmit:    []string{"WHERE", "HAVING", "ON", "FROM", "JOIN", "ABORT", "ACTION", "ADD", "AND", "AS", "ASC", "WINDOW"},
+		},
+		{
+			name:          "between SELECT and FROM does not suggest FROM or statement starters",
+			text:          "SELECT  FROM users;",
+			cursorLine:    0,
+			cursorCol:     7,
+			shouldContain: []string{"DISTINCT"},
+			shouldOmit:    []string{"FROM", "WHERE", "JOIN", "SELECT", "INSERT INTO", "CREATE TABLE"},
+		},
 	}
 
 	for _, tt := range tests {

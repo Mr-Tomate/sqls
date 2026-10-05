@@ -13,6 +13,7 @@ type StatementClauseContext struct {
 	LastKeyword       string
 	HasTableAfterFrom bool
 	HasNewlineBefore  bool
+	HasFromAfter      bool
 }
 
 func getContextualKeywords(syntaxPos parseutil.SyntaxPosition, clauseCtx StatementClauseContext) []string {
@@ -35,10 +36,16 @@ func getContextualKeywords(syntaxPos parseutil.SyntaxPosition, clauseCtx Stateme
 
 	switch clauseCtx.LastKeyword {
 	case "SELECT":
-		return []string{
-			"FROM", "AS", "DISTINCT", "CASE", "WHEN", "THEN", "ELSE", "END",
+		kws := []string{
+			"DISTINCT", "CASE", "WHEN", "THEN", "ELSE", "END",
 			"COUNT", "SUM", "AVG", "MIN", "MAX",
 		}
+		if !clauseCtx.HasFromAfter {
+			kws = append([]string{"FROM", "AS"}, kws...)
+		} else {
+			kws = append([]string{"AS"}, kws...)
+		}
+		return kws
 	case "WHERE", "HAVING":
 		return []string{
 			"AND", "OR", "NOT", "IN", "NOT IN", "LIKE", "NOT LIKE", "ILIKE",
@@ -112,22 +119,7 @@ func (c *Completer) keywordCandidates(syntaxPos parseutil.SyntaxPosition, clause
 		candidates = append(candidates, candidate)
 	}
 
-	if clauseCtx.LastKeyword == "" {
-		for _, k := range allKeywords {
-			if seen[strings.ToUpper(k)] {
-				continue
-			}
-			candidate := lsp.CompletionItem{
-				Label:  k,
-				Kind:   lsp.KeywordCompletion,
-				Detail: "keyword",
-			}
-			if lower {
-				candidate.Label = strings.ToLower(candidate.Label)
-			}
-			candidates = append(candidates, candidate)
-		}
-	}
+
 
 	return candidates
 }

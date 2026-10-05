@@ -77,23 +77,35 @@ func getStatementClauseContext(nw *parseutil.NodeWalker, parsed ast.TokenList, p
 	lastKW := ""
 	hasIdentAfterFrom := false
 	hasNewlineBefore := false
+	hasFromAfter := false
+	reachedCursor := false
 
 	for _, node := range scope.GetTokens() {
-		if aliased, ok := node.(*ast.Aliased); ok {
-			if lastKW == "FROM" {
-				hasIdentAfterFrom = true
+		if !reachedCursor {
+			if aliased, ok := node.(*ast.Aliased); ok {
+				if lastKW == "FROM" {
+					hasIdentAfterFrom = true
+				}
+				if pos.Line > aliased.Pos().Line {
+					hasNewlineBefore = true
+				}
+				reachedCursor = true
+				continue
 			}
-			if pos.Line > aliased.Pos().Line {
-				hasNewlineBefore = true
+
+			if token.ComparePos(node.Pos(), pos) >= 0 {
+				reachedCursor = true
+			} else if token.ComparePos(pos, node.Pos()) > 0 && token.ComparePos(pos, node.End()) <= 0 {
+				reachedCursor = true
 			}
-			break
 		}
 
-		if token.ComparePos(node.Pos(), pos) >= 0 {
-			break
-		}
-		if token.ComparePos(pos, node.Pos()) > 0 && token.ComparePos(pos, node.End()) <= 0 {
-			break
+		if reachedCursor {
+			upper := strings.ToUpper(strings.TrimSpace(node.String()))
+			if upper == "FROM" {
+				hasFromAfter = true
+			}
+			continue
 		}
 
 		upper := strings.ToUpper(strings.TrimSpace(node.String()))
@@ -122,6 +134,7 @@ func getStatementClauseContext(nw *parseutil.NodeWalker, parsed ast.TokenList, p
 		LastKeyword:       lastKW,
 		HasTableAfterFrom: hasIdentAfterFrom,
 		HasNewlineBefore:  hasNewlineBefore,
+		HasFromAfter:      hasFromAfter,
 	}
 }
 

@@ -108,6 +108,9 @@ func serve(c *cli.Context) error {
 	// Initialize log writer
 	var logWriter io.Writer
 	if logfile != "" {
+		if dir := filepath.Dir(logfile); dir != "" && dir != "." {
+			_ = os.MkdirAll(dir, 0755)
+		}
 		f, err := os.OpenFile(logfile, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0660)
 		if err != nil {
 			log.Fatal(err)
