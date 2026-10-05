@@ -17,6 +17,114 @@ import (
 	"github.com/sqls-server/sqls/token"
 )
 
+func isTopLevelClauseKeyword(kw string) bool {
+	switch kw {
+	case "SELECT", "FROM", "WHERE", "JOIN", "INNER JOIN", "LEFT JOIN", "RIGHT JOIN",
+		"FULL JOIN", "CROSS JOIN", "ON", "GROUP BY", "ORDER BY", "HAVING", "LIMIT",
+		"SET", "VALUES", "WITH", "UPDATE", "INSERT", "INSERT INTO", "DELETE", "DELETE FROM":
+		return true
+	}
+	return false
+}
+
+func getStatementClauseContext(nw *parseutil.NodeWalker, parsed ast.TokenList, pos token.Pos) StatementClauseContext {
+	var scope ast.TokenList
+	if nw != nil {
+		for i := len(nw.Paths) - 1; i >= 0; i-- {
+			cur := nw.Paths[i].CurNode
+			if _, ok := cur.(*ast.Parenthesis); ok {
+				if list, ok := cur.(ast.TokenList); ok {
+					scope = list
+					break
+				}
+			}
+			if _, ok := cur.(*ast.Statement); ok {
+				if list, ok := cur.(ast.TokenList); ok {
+					scope = list
+					break
+				}
+			}
+		}
+	}
+
+	if scope == nil {
+		var lastStmt ast.TokenList
+		for _, node := range parsed.GetTokens() {
+			if stmt, ok := node.(ast.TokenList); ok {
+				if token.ComparePos(pos, stmt.Pos()) >= 0 && token.ComparePos(pos, stmt.End()) <= 0 {
+					scope = stmt
+					break
+				}
+				if token.ComparePos(pos, stmt.Pos()) >= 0 {
+					lastStmt = stmt
+				}
+			}
+		}
+		if scope == nil {
+			scope = lastStmt
+		}
+		if scope == nil && len(parsed.GetTokens()) > 0 {
+			if stmt, ok := parsed.GetTokens()[0].(ast.TokenList); ok {
+				scope = stmt
+			}
+		}
+	}
+
+	if scope == nil {
+		return StatementClauseContext{}
+	}
+
+	lastKW := ""
+	hasIdentAfterFrom := false
+	hasNewlineBefore := false
+
+	for _, node := range scope.GetTokens() {
+		if aliased, ok := node.(*ast.Aliased); ok {
+			if lastKW == "FROM" {
+				hasIdentAfterFrom = true
+			}
+			if pos.Line > aliased.Pos().Line {
+				hasNewlineBefore = true
+			}
+			break
+		}
+
+		if token.ComparePos(node.Pos(), pos) >= 0 {
+			break
+		}
+		if token.ComparePos(pos, node.Pos()) > 0 && token.ComparePos(pos, node.End()) <= 0 {
+			break
+		}
+
+		upper := strings.ToUpper(strings.TrimSpace(node.String()))
+		if isTopLevelClauseKeyword(upper) {
+			lastKW = upper
+			if upper != "FROM" {
+				hasIdentAfterFrom = false
+			}
+		} else if lastKW == "FROM" {
+			switch node.Type() {
+			case ast.TypeIdentifier, ast.TypeMemberIdentifier, ast.TypeParenthesis:
+				hasIdentAfterFrom = true
+			default:
+				if upper != "" && !strings.HasPrefix(upper, "--") && upper != " " {
+					hasIdentAfterFrom = true
+				}
+			}
+		}
+
+		if pos.Line > node.End().Line {
+			hasNewlineBefore = true
+		}
+	}
+
+	return StatementClauseContext{
+		LastKeyword:       lastKW,
+		HasTableAfterFrom: hasIdentAfterFrom,
+		HasNewlineBefore:  hasNewlineBefore,
+	}
+}
+
 type completionType int
 
 const (
@@ -114,6 +222,7 @@ func (c *Completer) Complete(text string, params lsp.CompletionParams, lowercase
 	if err != nil {
 		return nil, err
 	}
+	clauseCtx := getStatementClauseContext(nodeWalker, parsed, pos)
 
 	lastWord := getLastWord(text, params.Position.Line+1, params.Position.Character)
 	withBackQuote := strings.HasPrefix(lastWord, "`")
@@ -187,7 +296,7 @@ func (c *Completer) Complete(text string, params lsp.CompletionParams, lowercase
 
 	if completionTypeIs(ctx.types, CompletionTypeKeyword) {
 		drivers := dialect.DataBaseKeywords(c.Driver)
-		items = append(items, c.keywordCandidates(lowercaseKeywords, drivers)...)
+		items = append(items, c.keywordCandidates(ctx.syntaxPos, clauseCtx, lowercaseKeywords, drivers)...)
 	}
 	if completionTypeIs(ctx.types, CompletionTypeFunction) {
 		drivers := dialect.DataBaseFunctions(c.Driver)
@@ -266,8 +375,9 @@ type completionParent struct {
 var noneParent = &completionParent{Type: ParentTypeNone}
 
 type CompletionContext struct {
-	types  []completionType
-	parent *completionParent
+	types     []completionType
+	parent    *completionParent
+	syntaxPos parseutil.SyntaxPosition
 }
 
 func getCompletionTypes(nw *parseutil.NodeWalker) *CompletionContext {
@@ -301,6 +411,7 @@ func getCompletionTypes(nw *parseutil.NodeWalker) *CompletionContext {
 				CompletionTypeSubQuery,
 				CompletionTypeView,
 				CompletionTypeFunction,
+				CompletionTypeKeyword,
 			}
 			p = noneParent
 		}
@@ -328,6 +439,7 @@ func getCompletionTypes(nw *parseutil.NodeWalker) *CompletionContext {
 				CompletionTypeSubQueryColumn,
 				CompletionTypeSubQuery,
 				CompletionTypeFunction,
+				CompletionTypeKeyword,
 			}
 		}
 	case syntaxPos == parseutil.TableReference:
@@ -350,6 +462,7 @@ func getCompletionTypes(nw *parseutil.NodeWalker) *CompletionContext {
 				CompletionTypeSchema,
 				CompletionTypeView,
 				CompletionTypeSubQuery,
+				CompletionTypeKeyword,
 			}
 		}
 	case syntaxPos == parseutil.WhereCondition:
@@ -374,6 +487,7 @@ func getCompletionTypes(nw *parseutil.NodeWalker) *CompletionContext {
 				CompletionTypeSubQueryColumn,
 				CompletionTypeSubQuery,
 				CompletionTypeFunction,
+				CompletionTypeKeyword,
 			}
 		}
 	case syntaxPos == parseutil.JoinClause:
@@ -384,6 +498,7 @@ func getCompletionTypes(nw *parseutil.NodeWalker) *CompletionContext {
 			CompletionTypeSchema,
 			CompletionTypeView,
 			CompletionTypeSubQuery,
+			CompletionTypeKeyword,
 		}
 	case syntaxPos == parseutil.JoinOn:
 		t = []completionType{
@@ -392,11 +507,13 @@ func getCompletionTypes(nw *parseutil.NodeWalker) *CompletionContext {
 			CompletionTypeReferencedTable,
 			CompletionTypeSubQueryColumn,
 			CompletionTypeSubQuery,
+			CompletionTypeKeyword,
 		}
 	case syntaxPos == parseutil.InsertColumn:
 		t = []completionType{
 			CompletionTypeColumn,
 			CompletionTypeView,
+			CompletionTypeKeyword,
 		}
 	default:
 		t = []completionType{
@@ -404,8 +521,9 @@ func getCompletionTypes(nw *parseutil.NodeWalker) *CompletionContext {
 		}
 	}
 	return &CompletionContext{
-		types:  t,
-		parent: p,
+		types:     t,
+		parent:    p,
+		syntaxPos: syntaxPos,
 	}
 }
 

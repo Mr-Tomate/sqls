@@ -9,9 +9,98 @@ import (
 	"github.com/sqls-server/sqls/parser/parseutil"
 )
 
-func (c *Completer) keywordCandidates(lower bool, keywords []string) []lsp.CompletionItem {
+type StatementClauseContext struct {
+	LastKeyword       string
+	HasTableAfterFrom bool
+	HasNewlineBefore  bool
+}
+
+func getContextualKeywords(syntaxPos parseutil.SyntaxPosition, clauseCtx StatementClauseContext) []string {
+	if clauseCtx.LastKeyword == "FROM" && clauseCtx.HasTableAfterFrom {
+		kws := []string{
+			"WHERE", "JOIN", "LEFT JOIN", "RIGHT JOIN", "INNER JOIN", "FULL JOIN", "CROSS JOIN",
+			"GROUP BY", "ORDER BY", "HAVING", "LIMIT", "OFFSET",
+			"UNION", "UNION ALL", "INTERSECT", "EXCEPT",
+			"FINAL", "PREWHERE", "SETTINGS", "FORMAT",
+		}
+		if clauseCtx.HasNewlineBefore {
+			kws = append(kws,
+				"SELECT", "INSERT INTO", "UPDATE", "DELETE FROM", "WITH",
+				"CREATE TABLE", "CREATE VIEW", "CREATE INDEX",
+				"ALTER TABLE", "DROP TABLE", "DROP VIEW",
+			)
+		}
+		return kws
+	}
+
+	switch clauseCtx.LastKeyword {
+	case "SELECT":
+		return []string{
+			"FROM", "AS", "DISTINCT", "CASE", "WHEN", "THEN", "ELSE", "END",
+			"COUNT", "SUM", "AVG", "MIN", "MAX",
+		}
+	case "WHERE", "HAVING":
+		return []string{
+			"AND", "OR", "NOT", "IN", "NOT IN", "LIKE", "NOT LIKE", "ILIKE",
+			"BETWEEN", "IS NULL", "IS NOT NULL", "EXISTS",
+			"GROUP BY", "ORDER BY", "HAVING", "LIMIT", "OFFSET",
+			"UNION", "UNION ALL",
+			"SETTINGS", "FORMAT",
+		}
+	case "ORDER BY":
+		return []string{
+			"ASC", "DESC", "NULLS FIRST", "NULLS LAST", "LIMIT", "OFFSET",
+			"SETTINGS", "FORMAT",
+		}
+	case "GROUP BY":
+		return []string{
+			"HAVING", "ORDER BY", "LIMIT", "OFFSET", "WITH ROLLUP",
+			"SETTINGS", "FORMAT",
+		}
+	case "JOIN", "INNER JOIN", "LEFT JOIN", "RIGHT JOIN", "FULL JOIN", "CROSS JOIN":
+		return []string{
+			"ON", "USING",
+		}
+	case "ON":
+		return []string{
+			"AND", "OR", "WHERE", "JOIN", "LEFT JOIN", "RIGHT JOIN", "INNER JOIN",
+			"GROUP BY", "ORDER BY", "LIMIT",
+		}
+	case "SET":
+		return []string{
+			"WHERE",
+		}
+	case "UPDATE":
+		return []string{
+			"SET",
+		}
+	case "INSERT", "INSERT INTO":
+		return []string{
+			"VALUES", "SELECT",
+		}
+	case "DELETE", "DELETE FROM":
+		return []string{
+			"WHERE",
+		}
+	case "FROM":
+		return []string{}
+	default:
+		return []string{
+			"SELECT", "INSERT INTO", "UPDATE", "DELETE FROM", "WITH",
+			"CREATE TABLE", "CREATE VIEW", "CREATE INDEX", "CREATE DATABASE",
+			"ALTER TABLE", "DROP TABLE", "DROP VIEW", "DROP INDEX",
+			"TRUNCATE", "USE", "SHOW", "DESCRIBE", "EXPLAIN", "CALL",
+		}
+	}
+}
+
+func (c *Completer) keywordCandidates(syntaxPos parseutil.SyntaxPosition, clauseCtx StatementClauseContext, lower bool, allKeywords []string) []lsp.CompletionItem {
 	candidates := []lsp.CompletionItem{}
-	for _, k := range keywords {
+	ctxKWs := getContextualKeywords(syntaxPos, clauseCtx)
+	seen := make(map[string]bool)
+
+	for _, k := range ctxKWs {
+		seen[strings.ToUpper(k)] = true
 		candidate := lsp.CompletionItem{
 			Label:  k,
 			Kind:   lsp.KeywordCompletion,
@@ -22,6 +111,24 @@ func (c *Completer) keywordCandidates(lower bool, keywords []string) []lsp.Compl
 		}
 		candidates = append(candidates, candidate)
 	}
+
+	if clauseCtx.LastKeyword == "" {
+		for _, k := range allKeywords {
+			if seen[strings.ToUpper(k)] {
+				continue
+			}
+			candidate := lsp.CompletionItem{
+				Label:  k,
+				Kind:   lsp.KeywordCompletion,
+				Detail: "keyword",
+			}
+			if lower {
+				candidate.Label = strings.ToLower(candidate.Label)
+			}
+			candidates = append(candidates, candidate)
+		}
+	}
+
 	return candidates
 }
 

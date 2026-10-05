@@ -2,6 +2,7 @@ package completer
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/sqls-server/sqls/internal/lsp"
@@ -200,6 +201,313 @@ func TestGenerateAlias(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := generateTableAlias(tt.table, tt.tMap); got != tt.want {
 				t.Errorf("generateAlias() = %v, want  %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestComplete_ContextualKeywords(t *testing.T) {
+	c := NewCompleter(nil)
+
+	containsLabel := func(items []lsp.CompletionItem, label string, exact bool) bool {
+		for _, item := range items {
+			if exact {
+				if item.Label == label {
+					return true
+				}
+			} else {
+				if strings.EqualFold(item.Label, label) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+
+	tests := []struct {
+		name          string
+		text          string
+		cursorLine    int
+		cursorCol     int
+		lowerCase     bool
+		shouldContain []string
+		shouldOmit    []string
+	}{
+		{
+			name:          "top-level query start suggests statement starters only",
+			text:          "sel",
+			cursorLine:    0,
+			cursorCol:     3,
+			shouldContain: []string{"SELECT"},
+			shouldOmit:    []string{"WHERE", "HAVING", "ON", "FROM", "JOIN", "LIMIT"},
+		},
+		{
+			name:          "top-level query start suggests INSERT INTO",
+			text:          "ins",
+			cursorLine:    0,
+			cursorCol:     3,
+			shouldContain: []string{"INSERT INTO"},
+			shouldOmit:    []string{"WHERE", "JOIN", "FROM", "ON"},
+		},
+		{
+			name:          "top-level query start suggests UPDATE",
+			text:          "upd",
+			cursorLine:    0,
+			cursorCol:     3,
+			shouldContain: []string{"UPDATE"},
+			shouldOmit:    []string{"WHERE", "JOIN", "FROM", "ON"},
+		},
+		{
+			name:          "top-level query start suggests DELETE FROM",
+			text:          "del",
+			cursorLine:    0,
+			cursorCol:     3,
+			shouldContain: []string{"DELETE FROM"},
+			shouldOmit:    []string{"WHERE", "JOIN", "FROM", "ON"},
+		},
+		{
+			name:          "after SELECT columns suggests FROM but not WHERE/JOIN",
+			text:          "SELECT id, name fr",
+			cursorLine:    0,
+			cursorCol:     18,
+			shouldContain: []string{"FROM"},
+			shouldOmit:    []string{"WHERE", "JOIN", "CREATE", "DROP", "ALTER"},
+		},
+		{
+			name:          "in SELECT column list typing wh does NOT suggest WHERE",
+			text:          "SELECT id, wh",
+			cursorLine:    0,
+			cursorCol:     13,
+			shouldContain: []string{},
+			shouldOmit:    []string{"WHERE"},
+		},
+		{
+			name:          "in SELECT column list typing joi does NOT suggest JOIN",
+			text:          "SELECT id, joi",
+			cursorLine:    0,
+			cursorCol:     14,
+			shouldContain: []string{},
+			shouldOmit:    []string{"JOIN", "LEFT JOIN", "INNER JOIN"},
+		},
+		{
+			name:          "after FROM table suggests WHERE and JOIN but not SELECT/CREATE",
+			text:          "SELECT * FROM users wh",
+			cursorLine:    0,
+			cursorCol:     22,
+			shouldContain: []string{"WHERE"},
+			shouldOmit:    []string{"SELECT", "CREATE", "DROP", "ALTER", "FROM"},
+		},
+		{
+			name:          "after FROM table suggests JOIN",
+			text:          "SELECT * FROM users joi",
+			cursorLine:    0,
+			cursorCol:     23,
+			shouldContain: []string{"JOIN"},
+			shouldOmit:    []string{"SELECT", "INSERT", "CREATE"},
+		},
+		{
+			name:          "after FROM table suggests LEFT JOIN",
+			text:          "SELECT * FROM users lef",
+			cursorLine:    0,
+			cursorCol:     23,
+			shouldContain: []string{"LEFT JOIN"},
+			shouldOmit:    []string{"SELECT", "INSERT", "CREATE"},
+		},
+		{
+			name:          "after FROM table suggests GROUP BY",
+			text:          "SELECT * FROM users gro",
+			cursorLine:    0,
+			cursorCol:     23,
+			shouldContain: []string{"GROUP BY"},
+			shouldOmit:    []string{"SELECT", "INSERT", "CREATE"},
+		},
+		{
+			name:          "after FROM table suggests ORDER BY",
+			text:          "SELECT * FROM users ord",
+			cursorLine:    0,
+			cursorCol:     23,
+			shouldContain: []string{"ORDER BY"},
+			shouldOmit:    []string{"SELECT", "INSERT", "CREATE"},
+		},
+		{
+			name:          "after FROM table suggests LIMIT",
+			text:          "SELECT * FROM users lim",
+			cursorLine:    0,
+			cursorCol:     23,
+			shouldContain: []string{"LIMIT"},
+			shouldOmit:    []string{"SELECT", "INSERT", "CREATE"},
+		},
+		{
+			name:          "after JOIN table suggests ON and USING",
+			text:          "SELECT * FROM users JOIN orders o",
+			cursorLine:    0,
+			cursorCol:     33,
+			shouldContain: []string{"ON"},
+			shouldOmit:    []string{"FROM", "SELECT", "INSERT", "WHERE"},
+		},
+		{
+			name:          "after WHERE condition suggests logical operators and clauses",
+			text:          "SELECT * FROM users WHERE id = 1 an",
+			cursorLine:    0,
+			cursorCol:     35,
+			shouldContain: []string{"AND"},
+			shouldOmit:    []string{"FROM", "CREATE", "DROP", "JOIN"},
+		},
+		{
+			name:          "after WHERE condition suggests OR",
+			text:          "SELECT * FROM users WHERE id = 1 o",
+			cursorLine:    0,
+			cursorCol:     34,
+			shouldContain: []string{"OR", "ORDER BY"},
+			shouldOmit:    []string{"FROM", "SELECT", "JOIN"},
+		},
+		{
+			name:          "after ORDER BY column suggests ASC and DESC",
+			text:          "SELECT * FROM users ORDER BY name de",
+			cursorLine:    0,
+			cursorCol:     36,
+			shouldContain: []string{"DESC"},
+			shouldOmit:    []string{"FROM", "WHERE", "JOIN", "SELECT"},
+		},
+		{
+			name:          "after ORDER BY column suggests ASC",
+			text:          "SELECT * FROM users ORDER BY name as",
+			cursorLine:    0,
+			cursorCol:     36,
+			shouldContain: []string{"ASC"},
+			shouldOmit:    []string{"FROM", "WHERE", "JOIN", "SELECT"},
+		},
+		{
+			name:          "after GROUP BY column suggests HAVING",
+			text:          "SELECT department, count(*) FROM employees GROUP BY department hav",
+			cursorLine:    0,
+			cursorCol:     66,
+			shouldContain: []string{"HAVING"},
+			shouldOmit:    []string{"FROM", "WHERE", "JOIN", "SELECT"},
+		},
+		{
+			name:          "UPDATE statement suggests SET",
+			text:          "UPDATE users se",
+			cursorLine:    0,
+			cursorCol:     15,
+			shouldContain: []string{"SET"},
+			shouldOmit:    []string{"SELECT", "FROM", "GROUP BY"},
+		},
+		{
+			name:          "DELETE statement suggests WHERE",
+			text:          "DELETE FROM users wh",
+			cursorLine:    0,
+			cursorCol:     20,
+			shouldContain: []string{"WHERE"},
+			shouldOmit:    []string{"SELECT", "FROM", "JOIN", "GROUP BY"},
+		},
+		{
+			name:          "INSERT statement suggests VALUES",
+			text:          "INSERT INTO users (id, name) val",
+			cursorLine:    0,
+			cursorCol:     32,
+			shouldContain: []string{"VALUES"},
+			shouldOmit:    []string{"WHERE", "JOIN", "GROUP BY"},
+		},
+		{
+			name:          "newline recovery without semicolon maintains top-level statement starter",
+			text:          "SELECT * FROM users\nsel",
+			cursorLine:    1,
+			cursorCol:     3,
+			shouldContain: []string{"SELECT"},
+			shouldOmit:    []string{"WHERE", "FROM", "JOIN", "HAVING"},
+		},
+		{
+			name:          "newline recovery without semicolon after INSERT",
+			text:          "INSERT INTO users (id) VALUES (1)\nup",
+			cursorLine:    1,
+			cursorCol:     2,
+			shouldContain: []string{"UPDATE"},
+			shouldOmit:    []string{"WHERE", "FROM", "JOIN"},
+		},
+		{
+			name:          "newline after semicolon maintains top-level statement starter",
+			text:          "SELECT * FROM users;\nsel",
+			cursorLine:    1,
+			cursorCol:     3,
+			shouldContain: []string{"SELECT"},
+			shouldOmit:    []string{"WHERE", "FROM", "JOIN", "HAVING"},
+		},
+		{
+			name:          "subquery enclosed in parens suggests inner query keywords",
+			text:          "SELECT * FROM (SELECT id, name fr)",
+			cursorLine:    0,
+			cursorCol:     33,
+			shouldContain: []string{"FROM"},
+			shouldOmit:    []string{"WHERE", "JOIN", "CREATE", "DROP"},
+		},
+		{
+			name:          "lowercase keywords preference respected",
+			text:          "sel",
+			cursorLine:    0,
+			cursorCol:     3,
+			lowerCase:     true,
+			shouldContain: []string{"select"},
+			shouldOmit:    []string{"SELECT", "WHERE"},
+		},
+		{
+			name:          "member identifier access does not suggest SQL keywords",
+			text:          "SELECT u.",
+			cursorLine:    0,
+			cursorCol:     9,
+			shouldContain: []string{},
+			shouldOmit:    []string{"SELECT", "WHERE", "FROM", "JOIN", "GROUP BY"},
+		},
+		{
+			name:          "ClickHouse FORMAT keyword after table reference",
+			text:          "SELECT * FROM users for",
+			cursorLine:    0,
+			cursorCol:     23,
+			shouldContain: []string{"FORMAT"},
+			shouldOmit:    []string{"SELECT", "INSERT"},
+		},
+		{
+			name:          "ClickHouse FINAL keyword after table reference",
+			text:          "SELECT * FROM users fi",
+			cursorLine:    0,
+			cursorCol:     22,
+			shouldContain: []string{"FINAL"},
+			shouldOmit:    []string{"SELECT", "INSERT"},
+		},
+		{
+			name:          "ClickHouse PREWHERE keyword after table reference",
+			text:          "SELECT * FROM users pre",
+			cursorLine:    0,
+			cursorCol:     23,
+			shouldContain: []string{"PREWHERE"},
+			shouldOmit:    []string{"SELECT", "INSERT"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			items, err := c.Complete(tt.text, lsp.CompletionParams{
+				TextDocumentPositionParams: lsp.TextDocumentPositionParams{
+					Position: lsp.Position{
+						Line:      tt.cursorLine,
+						Character: tt.cursorCol,
+					},
+				},
+			}, tt.lowerCase)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			for _, expected := range tt.shouldContain {
+				if !containsLabel(items, expected, tt.lowerCase) {
+					t.Errorf("expected completion to contain %q, but was missing. Items: %v", expected, items)
+				}
+			}
+
+			for _, omitted := range tt.shouldOmit {
+				if containsLabel(items, omitted, tt.lowerCase) {
+					t.Errorf("expected completion to OMIT %q in this context, but it was present", omitted)
+				}
 			}
 		})
 	}
