@@ -39,6 +39,7 @@ func CheckSyntaxPosition(nw *NodeWalker) SyntaxPosition {
 		"DISTINCT",
 		"DISTINCTROW",
 		"SELECT",
+		"RETURNING",
 	})):
 		res = SelectExpr
 	case nw.PrevNodesIs(true, genKeywordMatcher([]string{
@@ -50,6 +51,7 @@ func CheckSyntaxPosition(nw *NodeWalker) SyntaxPosition {
 		// WHERE Clause
 		"WHERE",
 		"HAVING",
+		"PREWHERE",
 		// Operator
 		"AND",
 		"OR",
@@ -97,11 +99,7 @@ func CheckSyntaxPosition(nw *NodeWalker) SyntaxPosition {
 	})):
 		res = getJoinCondition(nw)
 	case isInsertColumns(nw):
-		if isInsertValues(nw) {
-			res = InsertValue
-		} else {
-			res = InsertColumn
-		}
+		res = getParenthesisCondition(nw)
 	default:
 		res = Unknown
 	}
@@ -117,6 +115,9 @@ func getJoinCondition(nw *NodeWalker) SyntaxPosition {
 	return JoinClause
 }
 func getJoinOnCondition(nw *NodeWalker) SyntaxPosition {
+	if nw.PrevNodesIs(true, genKeywordMatcher([]string{"DISTINCT"})) {
+		return ColName
+	}
 	switch {
 	case nw.CurNodeIs(genTokenMatcher([]token.Kind{token.Period})):
 		return ColName
@@ -166,4 +167,22 @@ func isInsertValues(nw *NodeWalker) bool {
 		}
 	}
 	return false
+}
+
+func getParenthesisCondition(nw *NodeWalker) SyntaxPosition {
+	if isInsertValues(nw) {
+		return InsertValue
+	}
+	ParenthesisMatcher := astutil.NodeMatcher{
+		NodeTypes: []ast.NodeType{
+			ast.TypeParenthesis,
+		},
+	}
+	depth, ok := nw.CurNodeDepth(ParenthesisMatcher)
+	if ok {
+		if nw.PrevNodesIsWithDepth(true, genKeywordMatcher([]string{"CONFLICT", "INDEX", "FORCE INDEX", "USE INDEX", "IGNORE INDEX", "DISTINCT ON"}), depth) {
+			return ColName
+		}
+	}
+	return InsertColumn
 }
