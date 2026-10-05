@@ -114,7 +114,7 @@ func isTopLevelStatementKeyword(kw string) bool {
 	switch kw {
 	case "SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "ALTER", "DROP",
 		"TRUNCATE", "WITH", "USE", "SHOW", "DESCRIBE", "EXPLAIN",
-		"GRANT", "REVOKE", "MERGE", "CALL", "OPTIMIZE":
+		"GRANT", "REVOKE", "MERGE", "CALL", "OPTIMIZE", "PRAGMA", "ATTACH", "DETACH":
 		return true
 	}
 	return false
@@ -173,6 +173,7 @@ func parseStatement(reader *astutil.NodeReader) ast.TokenList {
 	lastCodeTokenIndex := -1
 	hasNewlineSinceLastCode := false
 	hasSeenSelectInInsert := false
+	hasSeenValuesInInsert := false
 	hasSeenMainQueryInWith := false
 
 	isStatementBoundary := func(i int, upperVal string) bool {
@@ -203,7 +204,7 @@ func parseStatement(reader *astutil.NodeReader) ast.TokenList {
 		}
 
 		// Safeguard 3: INSERT / REPLACE ... SELECT
-		if upperVal == "SELECT" && (stmtFirstKeyword == "INSERT" || stmtFirstKeyword == "REPLACE") && !hasSeenSelectInInsert {
+		if upperVal == "SELECT" && (stmtFirstKeyword == "INSERT" || stmtFirstKeyword == "REPLACE") && !hasSeenSelectInInsert && !hasSeenValuesInInsert {
 			hasSeenSelectInInsert = true
 			return false
 		}
@@ -286,6 +287,7 @@ func parseStatement(reader *astutil.NodeReader) ast.TokenList {
 				lastCodeTokenIndex = i
 				hasNewlineSinceLastCode = false
 				hasSeenSelectInInsert = false
+				hasSeenValuesInInsert = false
 				hasSeenMainQueryInWith = false
 				continue
 			}
@@ -308,6 +310,9 @@ func parseStatement(reader *astutil.NodeReader) ast.TokenList {
 		}
 
 		upperVal := strings.ToUpper(sqlTok.String())
+		if upperVal == "VALUES" && parenDepth == 0 {
+			hasSeenValuesInInsert = true
+		}
 
 		// Check for REPLACE INTO
 		if upperVal == "REPLACE" && i+1 < len(tokens) {
@@ -362,6 +367,7 @@ func parseStatement(reader *astutil.NodeReader) ast.TokenList {
 			lastCodeTokenIndex = i
 			hasNewlineSinceLastCode = false
 			hasSeenSelectInInsert = false
+			hasSeenValuesInInsert = false
 			hasSeenMainQueryInWith = false
 			continue
 		}
